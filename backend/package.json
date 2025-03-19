@@ -1,0 +1,29 @@
+{
+  "name": "ait",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "nodemon --inspect=7000 src/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "child_process": "^1.0.2",
+    "child-process": "^1.0.2",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "firebase": "^10.12.4",
+    "firebase-admin": "^12.2.0",
+    "jsonwebtoken": "^9.0.2",
+    "mqtt": "^5.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9",
+    "webpack": "^5.93.0",
+    "webpack-cli": "^5.1.4"
+  }
+}

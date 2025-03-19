@@ -51,7 +51,7 @@ async function generatePublicPrivateKeys() {
 
 async function generateSecretKey(myPrivateHex, anotherPublicHex) {
     return new Promise((resolve, reject) => {
-      const secretExecutablePath = 'C:/Users/Hii/Desktop/HHT_AIT/backend/src/app/diffie-hellman/exec-ecdh-secret.exe';
+    const secretExecutablePath = path.resolve(__dirname, '../diffie-hellman/exec-ecdh-secret.exe');
   
       const child = execFile(secretExecutablePath, (error, stdout, stderr) => {
         if (error) {
@@ -169,7 +169,7 @@ function reconstructDecryptedData(decryptedtext) {
 
 function decryptData(ciphertextHex, nonceHex, keyHex) {
     return new Promise((resolve, reject) => {
-        const executablePath = 'C:/Users/Hii/Desktop/HHT_AIT/backend/src/app/cryptography/exec-decrypt.exe';
+        const executablePath = path.resolve(__dirname, '../cryptography/exec-decrypt.exe');
 
         execFile(executablePath, [ciphertextHex, nonceHex, keyHex], (error, stdout, stderr) => {
             if (error) {

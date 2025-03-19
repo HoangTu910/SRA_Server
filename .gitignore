@@ -2,6 +2,7 @@
 backend/node_modules
 broker/node_modules
 socket/node_modules
+env/
 
 #firebase
 broker/cloud-aiot-firebase-adminsdk-ajjtt-47f48918f2.json

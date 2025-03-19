@@ -10,6 +10,7 @@ const DATA_TOPIC = 'sensors/data';
 const TOPIC_TO_RECEIVE_PUBLIC_FROM_CLIENT = 'encrypt/dhexchange';
 const TOPIC_HANDSHAKE_ECDH = 'handshake/ecdh';
 const TOPIC_HANDSHAKE_ECDH_SEND = 'handshake-send/ecdh';
+let expectedSequenceNumber = 0;  
 
 let serverPublicKey = null;
 let serverPrivateKey = null;
@@ -316,7 +317,7 @@ async function handleDataFrame(message, identifierId, packetType) {
         console.log('[NICE] Everything is done');
 
     } catch (error) {
-        console.error(`-- Data frame error: ${error.message}`);
+        console.error(`-- Data frame has been rejected: ${error.message}`);
         // Optional: Implement retry logic or recovery mechanism
     }
 }
@@ -377,19 +378,19 @@ function parseFrame(message) {
     const identifierId = message.readUInt32LE(2);
     const packetType = message.readUInt8(6);
 
-    // Validate preamble 
     if (preamble !== 0xAA55) {
-        throw new Error("Invalid preamble");
+        console.log(`Invalid preamble: expected 0xAA55, got 0x${preamble.toString(16)}`);
+        return;
     }
 
-    // Dispatch based on packet type
     switch (packetType) {
         case 0x03: // Handshake Frame
             return handleEcdhHandshake(message, identifierId, packetType);
         case 0x01: // Data Frame
             return handleDataFrame(message, identifierId, packetType);
         default:
-            throw new Error(`Unknown packet type: 0x${packetType.toString(16).padStart(2, '0')}`);
+            console.log(`Unexpected packet type: expected 0x01 or 0x03, got 0x${packetType.toString(16)}`);
+            return;
     }
 }
 
@@ -455,8 +456,19 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
     // Parse fixed header fields according to structure order
     const s_preamble = message.readUInt16LE(0);           // offset 0, 2 bytes
     const s_identifierId = message.readUInt32LE(2);       // offset 2, 4 bytes
+    if (s_identifierId !== expectedIdentifierId) {
+        throw new Error(`Identifier ID mismatch: expected ${expectedIdentifierId}, got ${s_identifierId}`);
+    }
+
     const s_packetType = message.readUInt8(6);            // offset 6, 1 byte
     const s_sequenceNumber = message.readUInt16LE(7);     // offset 7, 2 bytes
+
+    if (s_sequenceNumber !== expectedSequenceNumber) {
+        throw new Error(`Invalid sequence number: got ${s_sequenceNumber}, expected ${expectedSequenceNumber}`);
+    }
+    expectedSequenceNumber = (expectedSequenceNumber + 1) % 65536;
+    
+
     const s_timestamp = message.readBigUInt64LE(9);       // offset 9, 8 bytes
     const s_nonce = message.subarray(17, 17 + NONCE_SIZE); // offset 17, 16 bytes
     const s_payloadLength = message.readUInt16LE(17 + NONCE_SIZE); // offset 33, 2 bytes
@@ -495,13 +507,9 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
     {    
         throw new Error(`MAC tag mismatch: expected ${s_macTag.toString('hex')}, got ${authTag.toString(16)}`);
     }
-
-    if (s_identifierId !== expectedIdentifierId) {
-        throw new Error(`Identifier ID mismatch: expected ${expectedIdentifierId}, got ${s_identifierId}`);
-    }
-    if (s_packetType !== expectedPacketType) {
-        throw new Error(`Packet type mismatch: expected ${expectedPacketType}, got ${s_packetType}`);
-    }
+    // if (s_packetType !== expectedPacketType) {
+    //     throw new Error(`Packet type mismatch: expected ${expectedPacketType}, got ${s_packetType}`);
+    // }
     if (s_endMarker.toString(16) !== (0xAABB).toString(16)) {  // Assuming 0xAABB as expected end marker
         throw new Error(`End marker mismatch: expected ${0xAABB.toString(16)}, got ${s_endMarker.toString(16)}`);
     }

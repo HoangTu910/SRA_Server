@@ -1,3 +1,9 @@
+#node_modules
 backend/node_modules
 broker/node_modules
 socket/node_modules
+
+#firebase
+broker/cloud-aiot-firebase-adminsdk-ajjtt-47f48918f2.json
+backend/src/config/cloud-aiot-firebase-adminsdk-ajjtt-47f48918f2.json
+socket/cloud-aiot-firebase-adminsdk-ajjtt-47f48918f2.json

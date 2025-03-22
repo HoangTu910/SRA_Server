@@ -300,21 +300,21 @@ async function handleDataFrame(message, identifierId, packetType) {
             throw new Error('[DAMN] Invalid data frame received -_-');
         }
         console.log('[1/3] Parse data frame completed')
-        logServerDataFrame(frame);
+        // logServerDataFrame(frame);
 
         // State 3: Extract sensor data
         const data = parseSensorData(frame.decryptedText);
         if (!data) {
             throw new Error('[DAMN] Failed to parse sensor data from decrypted payload -_-');
         }
-        console.log(`[2/3] Parsed sensor data completed`);
+        // console.log(`[2/3] Parsed sensor data completed`);
         console.log(data);
 
         //State ?: Send data to database (FIX ME)
 
         // State 4: Send ACK response
         await publishAck(TOPIC_HANDSHAKE_ECDH_SEND, ACK_PACKET);
-        console.log('[NICE] Everything is done');
+        // console.log('[NICE] Everything is done');
 
     } catch (error) {
         console.error(`-- Data frame has been rejected: ${error.message}`);
@@ -355,7 +355,7 @@ async function publishWithCallback(topic, message, description) {
             resolve();
         }
         });
-    });
+    }); 
 }
 
 async function uploadToFirestore(data) {

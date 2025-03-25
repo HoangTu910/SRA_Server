@@ -10,7 +10,14 @@ const DATA_TOPIC = 'sensors/data';
 const TOPIC_TO_RECEIVE_PUBLIC_FROM_CLIENT = 'encrypt/dhexchange';
 const TOPIC_HANDSHAKE_ECDH = 'handshake/ecdh';
 const TOPIC_HANDSHAKE_ECDH_SEND = 'handshake-send/ecdh';
+
+const RESET_SEQUENCE_PACKET =  Buffer.from([0x11]);
+
+const THRESHOLD_FOR_REJECTING_SEQUENCE = 10;
+
 let expectedSequenceNumber = 0;  
+let safeCounter = 0;
+let failedSequenceNumber = 0;
 
 let serverPublicKey = null;
 let serverPrivateKey = null;
@@ -300,25 +307,36 @@ async function handleDataFrame(message, identifierId, packetType) {
             throw new Error('[DAMN] Invalid data frame received -_-');
         }
         console.log('[1/3] Parse data frame completed')
-        // logServerDataFrame(frame);
+        logServerDataFrame(frame);
 
         // State 3: Extract sensor data
         const data = parseSensorData(frame.decryptedText);
         if (!data) {
             throw new Error('[DAMN] Failed to parse sensor data from decrypted payload -_-');
         }
-        // console.log(`[2/3] Parsed sensor data completed`);
+        console.log(`[2/3] Parsed sensor data completed`);
         console.log(data);
 
         //State ?: Send data to database (FIX ME)
 
         // State 4: Send ACK response
         await publishAck(TOPIC_HANDSHAKE_ECDH_SEND, ACK_PACKET);
-        // console.log('[NICE] Everything is done');
+        console.log('[NICE] Everything is done');
 
     } catch (error) {
         console.error(`-- Data frame has been rejected: ${error.message}`);
-        // Optional: Implement retry logic or recovery mechanism
+        if(failedSequenceNumber === THRESHOLD_FOR_REJECTING_SEQUENCE) {
+            console.log(`-- Sequence number ${failedSequenceNumber} times. Resetting counter...`);
+            // Convert serverSecretKey from hex string to number and use only the first 16 bits
+            const secretKeyNum = parseInt(serverSecretKey.slice(0, 4), 16);
+            // XOR the safeCounter with the first 16 bits of secret key
+            expectedSequenceNumber = (safeCounter ^ secretKeyNum) % 65536;
+            await publishSignalForResettingSequence(TOPIC_HANDSHAKE_ECDH_SEND, RESET_SEQUENCE_PACKET);
+            failedSequenceNumber = 0;
+        }
+        else {
+            failedSequenceNumber++;
+        }
     }
 }
 
@@ -333,6 +351,19 @@ function publishAck(topic, ackPacket) {
                 reject(new Error(`Failed to publish ACK to ${topic}: ${err.message}`));
             } else {
                 console.log(`[3/3] Publish ACK to ${topic} completed`);
+                resolve();
+            }
+        });
+    });
+}
+
+function publishSignalForResettingSequence(topic, signal) {
+    return new Promise((resolve, reject) => {
+        client.publish(topic, signal, { qos: 1 }, (err) => {
+            if (err) {
+                reject(new Error(`Failed to publish signal to ${topic}: ${err.message}`));
+            } else {
+                console.log(`[*] Publish Signal to ${topic} completed`);
                 resolve();
             }
         });
@@ -467,7 +498,7 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
         throw new Error(`Invalid sequence number: got ${s_sequenceNumber}, expected ${expectedSequenceNumber}`);
     }
     expectedSequenceNumber = (expectedSequenceNumber + 1) % 65536;
-    
+    safeCounter = expectedSequenceNumber;
 
     const s_timestamp = message.readBigUInt64LE(9);       // offset 9, 8 bytes
     const s_nonce = message.subarray(17, 17 + NONCE_SIZE); // offset 17, 16 bytes

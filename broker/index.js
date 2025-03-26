@@ -63,6 +63,6 @@ aedes.on('subscribe', (subscriptions, client) => {
 
 aedes.on('publish', (packet, client) => {
   setImmediate(() => {
-    console.log(`📡 [MESSAGE_PUBLISHED] ${client ? client.id : 'BROKER'} → ${packet.topic}`);
+    // console.log(`📡 [MESSAGE_PUBLISHED] ${client ? client.id : 'BROKER'} → ${packet.topic}`);
   });
 });

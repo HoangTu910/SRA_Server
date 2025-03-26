@@ -326,11 +326,23 @@ async function handleDataFrame(message, identifierId, packetType) {
     } catch (error) {
         console.error(`-- Data frame has been rejected: ${error.message}`);
         if(failedSequenceNumber === THRESHOLD_FOR_REJECTING_SEQUENCE) {
-            console.log(`-- Sequence number ${failedSequenceNumber} times. Resetting counter...`);
-            // Convert serverSecretKey from hex string to number and use only the first 16 bits
-            const secretKeyNum = parseInt(serverSecretKey.slice(0, 4), 16);
-            // XOR the safeCounter with the first 16 bits of secret key
+            console.log(`-- Sequence number failed ${failedSequenceNumber} times. Resetting counter...`);
+            
+            // Check if serverSecretKey is a string and log its type
+            console.log('Server Secret Key type:', typeof serverSecretKey);
+            
+            if (typeof serverSecretKey !== 'string') {
+                throw new Error('Server secret key must be a hex string');
+            }
+            
+            const secretKeyBytes = new Uint8Array(serverSecretKey.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+            let secretKeyNum = 0;
+            for (let i = 0; i < secretKeyBytes.length; i++) {
+                secretKeyNum ^= secretKeyBytes[i] << ((i % 2) * 8); // Shift and XOR alternately
+            }
+            console.log(`-- Safe Counter: ${safeCounter}`);
             expectedSequenceNumber = (safeCounter ^ secretKeyNum) % 65536;
+            console.log(`-- Resetting sequence number to ${expectedSequenceNumber}`);
             await publishSignalForResettingSequence(TOPIC_HANDSHAKE_ECDH_SEND, RESET_SEQUENCE_PACKET);
             failedSequenceNumber = 0;
         }
@@ -350,6 +362,7 @@ function publishAck(topic, ackPacket) {
             if (err) {
                 reject(new Error(`Failed to publish ACK to ${topic}: ${err.message}`));
             } else {
+                safeCounter = (safeCounter + 1) % 65536; 
                 console.log(`[3/3] Publish ACK to ${topic} completed`);
                 resolve();
             }
@@ -498,7 +511,6 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
         throw new Error(`Invalid sequence number: got ${s_sequenceNumber}, expected ${expectedSequenceNumber}`);
     }
     expectedSequenceNumber = (expectedSequenceNumber + 1) % 65536;
-    safeCounter = expectedSequenceNumber;
 
     const s_timestamp = message.readBigUInt64LE(9);       // offset 9, 8 bytes
     const s_nonce = message.subarray(17, 17 + NONCE_SIZE); // offset 17, 16 bytes

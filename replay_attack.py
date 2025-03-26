@@ -71,7 +71,7 @@ def replay_attack_mqtt():
         return 
 
     #replay the data frame 10 times
-    for i in range (0, 1000):
+    for i in range (0, 100):
         print("Replaying the captured Data Frame...")
         data_frame = create_data_frame()
         send_data_frame_mqtt(data_frame, client)

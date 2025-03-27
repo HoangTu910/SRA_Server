@@ -604,7 +604,7 @@ function logServerDataFrame(frame) {
         { "Field": "Nonce", "Value": frame.nonce.toString('hex') },
         { "Field": "Payload Length", "Value": frame.payloadLength },
         { "Field": "Encrypted Payload", "Value": frame.encryptedPayload.toString('hex') },
-        { "Field": "Auth Tag", "Value": frame.macTag.toString('hex') },
+        { "Field": "MAC Tag", "Value": frame.macTag.toString('hex') },
         { "Field": "End Marker", "Value": `0x${frame.endMarker.toString(16)}`}
     ]);
 }

@@ -455,42 +455,16 @@ function parseHandshakeFrame(message, identifierId, packetType) {
 }
 
 const epoch = new Date(0);
-function MACCompute() {
-    // Start from Unix epoch (January 1, 1970 00:00:00 UTC)
-    // const minute = epoch.getUTCMinutes();
-    // const hour = epoch.getUTCHours(); 
-    // const day = epoch.getUTCDate();
-    // const month = epoch.getUTCMonth() + 1;  // getUTCMonth() returns 0-11
-    // const year = epoch.getUTCFullYear();
-    
-    const minute = 30;
-    const hour = 12;
-    const day = 15;
-    const month = 6;    
-    const year = 2023;
-
-    let T = 0;
-    T |= (minute & 0x3F) >>> 0;
-    T |= ((hour & 0x1F) << 6) >>> 0;
-    T |= ((day & 0x1F) << 11) >>> 0;
-    T |= ((month & 0x0F) << 16) >>> 0;
-    T |= ((year & 0xFFF) << 20) >>> 0;
-
+function MACCompute(inputNumber) {
+    const T = (inputNumber >>> 0);
     const K = 0x24C8E560 >>> 0;
-    const T_low_rotl = (((T << 7) | (T >>> (32 - 7))) >>> 0);
+    const T_low_rotl = ((T << 7) | (T >>> (32 - 7))) >>> 0;
     const A = (T ^ T_low_rotl) >>> 0;
-    const T_high_rotr = (((T >>> 11) | (T << (32 - 11))) >>> 0);
+    const T_high_rotr = ((T >>> 11) | (T << (32 - 11))) >>> 0;
     const B = (T ^ T_high_rotr) >>> 0;
     const MAC_final = ((A ^ B) ^ K) >>> 0;
 
-    // console.log("T =", T >>> 0);
-    // console.log("T_low_rotl =", T_low_rotl >>> 0);
-    // console.log("A =", A >>> 0);
-    // console.log("T_high_rotr =", T_high_rotr >>> 0);
-    // console.log("B =", B >>> 0);
-    // console.log("MAC_final =", MAC_final >>> 0);
-
-    return MAC_final >>> 0; 
+    return MAC_final;
 }
 
 async function parseDataFrame(message, expectedIdentifierId, expectedPacketType) {      
@@ -535,7 +509,7 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
     // console.log("Server Secret Key: ", serverSecretKey);
 
     const { decryptedText, authTagHex } = await decryptData(encryptedHex, nonceHex, serverSecretKey);
-    const macTag = MACCompute();
+    const macTag = MACCompute(s_sequenceNumber);
     const buffer = Buffer.from(s_macTag);
     const receivedMac = buffer.readUInt32LE(0);
     // console.log("Received MAC Tag: ", macTag);

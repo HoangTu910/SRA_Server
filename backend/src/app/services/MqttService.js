@@ -362,7 +362,7 @@ function publishAck(topic, ackPacket) {
             if (err) {
                 reject(new Error(`Failed to publish ACK to ${topic}: ${err.message}`));
             } else {
-                safeCounter = (safeCounter + 1) % 65536; 
+                safeCounter = (safeCounter + ((safeCounter << 3) ^ (safeCounter >> 2) ^ 7)) % 65536;
                 console.log(`[3/3] Publish ACK to ${topic} completed`);
                 resolve();
             }

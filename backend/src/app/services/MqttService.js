@@ -175,10 +175,39 @@ function reconstructDecryptedData(decryptedtext) {
     return result;
 }
 
+function encryptData(plaintextHex, nonceHex, keyHex, associatedDataHex) {
+    return new Promise((resolve, reject) => {
+        const executablePath = path.resolve(__dirname, '../cryptography/exec-encrypt.exe');
+      
+        // Pass all arguments, including associatedDataHex
+        execFile(executablePath, [plaintextHex, nonceHex, keyHex, associatedDataHex], (error, stdout, stderr) => {
+            if (error) {
+                return reject(new Error(`Execution error: ${error.message}`));
+            }
+            if (stderr) {
+                console.error('stderr:', stderr);
+            }
+
+            // Process the output from the C++ program
+            const outputLines = stdout.trim().split("\n");
+
+            if (outputLines.length < 2) {
+                return reject(new Error("Unexpected output format from decryption executable."));
+            }
+
+            const encryptedText = outputLines[0].replace("Encrypted Text: ", "").trim();
+            const authTagHex = outputLines[1].replace("Auth Tag: ", "").trim();
+
+            resolve({ encryptedText, authTagHex });
+        });
+    });
+}
+
 function decryptData(ciphertextHex, nonceHex, keyHex) {
     return new Promise((resolve, reject) => {
         const executablePath = path.resolve(__dirname, '../cryptography/exec-decrypt.exe');
 
+        // Pass all arguments, including associatedDataHex
         execFile(executablePath, [ciphertextHex, nonceHex, keyHex], (error, stdout, stderr) => {
             if (error) {
                 return reject(new Error(`Execution error: ${error.message}`));
@@ -187,14 +216,13 @@ function decryptData(ciphertextHex, nonceHex, keyHex) {
                 console.error('stderr:', stderr);
             }
 
-            // Xử lý đầu ra của chương trình C++
+            // Process the output from the C++ program
             const outputLines = stdout.trim().split("\n");
 
             if (outputLines.length < 2) {
                 return reject(new Error("Unexpected output format from decryption executable."));
             }
 
-            // Lấy đúng dòng output mong muốn
             const decryptedText = outputLines[0].replace("Decrypted Text: ", "").trim();
             const authTagHex = outputLines[1].replace("Auth Tag: ", "").trim();
 
@@ -263,7 +291,7 @@ async function handleClientPublicKey(message) {
 async function handleEcdhHandshake(message, identifierId, packetType) {
     try {
         // State 1: Parse and validate frame
-        const frame = parseHandshakeFrame(message, identifierId, packetType);
+        const frame = await parseHandshakeFrame(message, identifierId, packetType);
         // logHandshakeFrame(frame);
 
         // State 2: Store client public key
@@ -290,9 +318,22 @@ async function handleEcdhHandshake(message, identifierId, packetType) {
         serverReceivePublic = serverReceivePublic.toString('hex');
         serverSecretKey = await generateSecretKey(serverPrivateKey, serverReceivePublic);
         // console.log("-- Generated secret key:", serverSecretKey.toString('hex').slice(0, 16) + "...");
+        console.log("-- Generated secret key");
 
     } catch (error) {
-        console.error('Handshake error:', error.message);
+        if (error instanceof TypeError) {
+            console.error('Type Error in handshake:', error.message);
+            console.error('Stack:', error.stack);
+        } else if (error.message.includes('Failed to generate')) {
+            console.error('Key Generation Error:', error.message);
+            // Implement retry for key generation
+        } else if (error.message.includes('Publish failed')) {
+            console.error('MQTT Publish Error:', error.message);
+            // Implement retry for publishing
+        } else {
+            console.error('Unexpected Handshake Error:', error.message);
+            console.error('Stack:', error.stack);
+        }
         // Implement retry logic or error recovery here
     }
 }
@@ -426,7 +467,6 @@ function parseFrame(message) {
         console.log(`Invalid preamble: expected 0xAA55, got 0x${preamble.toString(16)}`);
         return;
     }
-
     switch (packetType) {
         case 0x03: // Handshake Frame
             return handleEcdhHandshake(message, identifierId, packetType);
@@ -438,23 +478,65 @@ function parseFrame(message) {
     }
 }
 
-function parseHandshakeFrame(message, identifierId, packetType) {
-    const publicKeyStart = 9;         // Public key starts at offset 9
-    const publicKeyLength = 48;       // Public key is 48 bytes
-    const sequenceNumberOffset = 7;   // Sequence number offset
-    const endMarkerOffset = publicKeyStart + publicKeyLength;  // End marker offset (calculated based on previous data)
+async function parseHandshakeFrame(message, identifierId, packetType) {
+    const preambleSize = 2;           // uint16_t
+    const identifierIdSize = 4;       // uint32_t
+    const packetTypeSize = 1;         // uint8_t
+    const nonceSize = 16;             // NONCE_SIZE = 16
+    const publicKeyLengthSize = 1;    // uint8_t
+    const publicKeySize = 48;         // ECC_PUB_KEY_SIZE = 48
+    const authTagSize = 16;           // AUTH_TAG_SIZE = 16
+    const endMarkerSize = 2;          // uint16_t
 
+    // Calculate offsets
+    const preambleOffset = 0;
+    const identifierIdOffset = preambleOffset + preambleSize;              // 2
+    const packetTypeOffset = identifierIdOffset + identifierIdSize;        // 6
+    const nonceOffset = packetTypeOffset + packetTypeSize;                // 7
+    const publicKeyLengthOffset = nonceOffset + nonceSize;                // 23
+    const publicKeyOffset = publicKeyLengthOffset + publicKeyLengthSize;  // 24
+    const authTagOffset = publicKeyOffset + publicKeySize;                // 72
+    const endMarkerOffset = authTagOffset + authTagSize;                  // 88
+
+    // Validate message length
+    const expectedLength = endMarkerOffset + endMarkerSize; // 90 bytes
+    if (message.length < expectedLength) {
+        throw new Error(`Invalid frame size: expected at least ${expectedLength} bytes, got ${message.length}`);
+    }
+
+    // Parse the fields from the message Buffer
+    const preamble = message.readUInt16LE(preambleOffset);                // 2 bytes
+    const parsedIdentifierId = message.readUInt32LE(identifierIdOffset);  // 4 bytes
+    const parsedPacketType = message.readUInt8(packetTypeOffset);         // 1 byte
+    const nonce = message.subarray(nonceOffset, nonceOffset + nonceSize); // 16 bytes
+    const publicKeyLength = message.readUInt8(publicKeyLengthOffset);     // 1 byte
+    const publicKey = message.subarray(publicKeyOffset, publicKeyOffset + publicKeySize); // 48 bytes
+    const authTag = message.subarray(authTagOffset, authTagOffset + authTagSize);         // 16 bytes
+    const endMarker = message.readUInt16LE(endMarkerOffset);              // 2 bytes
+
+    // Convert nonce and authTag to hex for decryption
+    const nonceHex = Buffer.isBuffer(nonce) ? nonce.toString('hex') : nonce;
+    const associatedDataHex = "48454c4c4f"; 
+    const serverPresharedKey = "000102030405060708090a0b0c0d0e0f";
+    let plaintext = "";
+    const { encryptedText, authTagHex } = await encryptData(plaintext, nonceHex, serverPresharedKey, associatedDataHex);
+    if(authTagHex !== authTag.toString('hex')) {
+        console.log(`MAC tag mismatch: expected ${authTag.toString('hex')}, got ${authTagHex}`);
+    }
+    
+    // Return the parsed frame
     return {
-        preamble: message.readUInt16LE(0),                               // 2 bytes for preamble
-        identifierId: identifierId,                                       // Unique identifier passed in the argument
-        packetType: packetType,                                           // Packet type passed in the argument
-        sequenceNumber: message.readUInt16LE(sequenceNumberOffset),      // 2 bytes for sequence number
-        publicKey: message.subarray(publicKeyStart, publicKeyStart + publicKeyLength), // 32 bytes for public key
-        endMarker: message.readUInt16LE(endMarkerOffset)                  // 2 bytes for end marker
+        preamble: preamble,
+        identifierId: identifierId || parsedIdentifierId, // Use passed value or parsed value
+        packetType: packetType || parsedPacketType,       // Use passed value or parsed value
+        nonce: nonce,                                     // Raw Buffer (16 bytes)
+        publicKeyLength: publicKeyLength,                 // Should match publicKeySize (48)
+        publicKey: publicKey,                             // Raw Buffer (48 bytes)
+        authTag: authTag,                                 // Raw Buffer (16 bytes)
+        endMarker: endMarker
     };
 }
 
-const epoch = new Date(0);
 function MACCompute(inputNumber) {
     const T = (inputNumber >>> 0);
     const K = 0x24C8E560 >>> 0;
@@ -467,34 +549,38 @@ function MACCompute(inputNumber) {
     return MAC_final;
 }
 
-async function parseDataFrame(message, expectedIdentifierId, expectedPacketType) {      
-    const NONCE_SIZE = 16;  
-    const AUTH_TAG_SIZE = 4;
+async function parseDataFrame(message, expectedIdentifierId, expectedPacketType) {
+    const NONCE_SIZE = 16;
+    const AUTH_TAG_SIZE = 16; 
 
-    // Parse fixed header fields according to structure order
-    const s_preamble = message.readUInt16LE(0);           // offset 0, 2 bytes
-    const s_identifierId = message.readUInt32LE(2);       // offset 2, 4 bytes
+    const s_preamble = message.readUInt16LE(0);          // offset 0, 2 bytes
+    const s_identifierId = message.readUInt32LE(2);      // offset 2, 4 bytes
     if (s_identifierId !== expectedIdentifierId) {
         throw new Error(`Identifier ID mismatch: expected ${expectedIdentifierId}, got ${s_identifierId}`);
     }
 
     const s_packetType = message.readUInt8(6);            // offset 6, 1 byte
-    const s_sequenceNumber = message.readUInt16LE(7);     // offset 7, 2 bytes
+    if (expectedPacketType !== undefined && s_packetType !== expectedPacketType) {
+        throw new Error(`Packet Type mismatch: expected ${expectedPacketType}, got ${s_packetType}`);
+    }
 
-    if (s_sequenceNumber !== expectedSequenceNumber) {
+    const s_sequenceNumber = message.readUInt32LE(7);    // offset 7, 4 bytes
+
+    if (typeof expectedSequenceNumber !== 'undefined' && s_sequenceNumber !== expectedSequenceNumber) {
         throw new Error(`Invalid sequence number: got ${s_sequenceNumber}, expected ${expectedSequenceNumber}`);
     }
-    expectedSequenceNumber = (expectedSequenceNumber + 1) % 65536;
+    if (typeof expectedSequenceNumber !== 'undefined') {
+        expectedSequenceNumber = (expectedSequenceNumber + 1) % 65536; // Updated for 4-byte sequence number
+    }
 
-    const s_timestamp = message.readBigUInt64LE(9);       // offset 9, 8 bytes
-    const s_nonce = message.subarray(17, 17 + NONCE_SIZE); // offset 17, 16 bytes
-    const s_payloadLength = message.readUInt16LE(17 + NONCE_SIZE); // offset 33, 2 bytes
+    const s_nonce = message.subarray(11, 11 + NONCE_SIZE); // offset 11, 16 bytes
+    const s_payloadLength = message.readUInt16LE(11 + NONCE_SIZE); // offset 27, 2 bytes (Updated to 2 bytes)
 
     // Calculate offsets
-    const encryptedPayloadStart = 17 + NONCE_SIZE + 2;    // offset 35
+    const encryptedPayloadStart = 11 + NONCE_SIZE + 2;    // offset 29 (Adjusted offset)
     const encryptedPayloadEnd = encryptedPayloadStart + s_payloadLength;
     const macTagStart = encryptedPayloadEnd;
-    const macTagEnd = macTagStart + AUTH_TAG_SIZE;        // uint64_t is 8 bytes
+    const macTagEnd = macTagStart + AUTH_TAG_SIZE;
     const s_endMarkerOffset = macTagEnd;
 
     const s_encryptedPayload = message.subarray(encryptedPayloadStart, encryptedPayloadEnd);
@@ -504,47 +590,32 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
     const encryptedHex = s_encryptedPayload.toString('hex');
     const nonceHex = s_nonce.toString('hex');
 
-    // console.log("Encrypted Payload: ", encryptedHex);
-    // console.log("Nonce: ", nonceHex);
-    // console.log("Server Secret Key: ", serverSecretKey);
-
-    const { decryptedText, authTagHex } = await decryptData(encryptedHex, nonceHex, serverSecretKey);
-    const macTag = MACCompute(s_sequenceNumber);
-    const buffer = Buffer.from(s_macTag);
-    const receivedMac = buffer.readUInt32LE(0);
-    // console.log("Received MAC Tag: ", macTag);
-    // console.log("Computed MAC Tag: ", receivedMac);
-
-    if (!decryptedText) {
-        throw new Error('[DAMN] Decryption failed or returned empty data -_-');
+    let decryptedText = null;
+    try {
+        const decryptionResult = await decryptData(encryptedHex, nonceHex, serverSecretKey);
+        decryptedText = decryptionResult.decryptedText;
+        if (!decryptedText) {
+            console.warn('[WARN] Decryption returned empty data.');
+        }
+    } catch (error) {
+        console.error('[ERROR] Decryption failed:', error);
     }
 
-    // Compare mac tag (8 bytes)
-    if (macTag !== receivedMac)
-    {    
-        throw new Error(`MAC tag mismatch: expected ${s_macTag.toString('hex')}, got ${authTag.toString(16)}`);
-    }
-    // if (s_packetType !== expectedPacketType) {
-    //     throw new Error(`Packet type mismatch: expected ${expectedPacketType}, got ${s_packetType}`);
-    // }
-    if (s_endMarker.toString(16) !== (0xAABB).toString(16)) {  // Assuming 0xAABB as expected end marker
+    if (s_endMarker !== 0xAABB) { 
         throw new Error(`End marker mismatch: expected ${0xAABB.toString(16)}, got ${s_endMarker.toString(16)}`);
     }
-
-    const endTime = Date.now();
 
     return {
         preamble: s_preamble,
         identifierId: s_identifierId,
         packetType: s_packetType,
         sequenceNumber: s_sequenceNumber,
-        timestamp: s_timestamp,
         nonce: s_nonce,
         payloadLength: s_payloadLength,
         encryptedPayload: s_encryptedPayload,
-        macTag: s_macTag,  // Changed from authTag to match structure
+        macTag: s_macTag,
         endMarker: s_endMarker,
-        decryptedText
+        decryptedText: decryptedText
     };
 }
 
@@ -574,7 +645,6 @@ function logServerDataFrame(frame) {
         { "Field": "Identifier ID", "Value": `0x${frame.identifierId.toString(16)}` },
         { "Field": "Packet Type", "Value": `0x${frame.packetType.toString(16)}` },
         { "Field": "Sequence Number", "Value": frame.sequenceNumber },
-        { "Field": "Timestamp", "Value": frame.timestamp.toString() },
         { "Field": "Nonce", "Value": frame.nonce.toString('hex') },
         { "Field": "Payload Length", "Value": frame.payloadLength },
         { "Field": "Encrypted Payload", "Value": frame.encryptedPayload.toString('hex') },

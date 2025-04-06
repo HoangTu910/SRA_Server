@@ -2,8 +2,8 @@
 setlocal
 
 REM Set paths
-set "OUTPUT_PATH=C:\Users\Hii\Desktop\HHT_AIT\backend\src\app\cryptography\exec-decrypt.exe"
-set "SRC_PATH=C:\Users\Hii\Desktop\HHT_AIT\backend\src\app\cryptography\src"
+set "OUTPUT_PATH=C:\Users\Hii\Desktop\Server_For_DVGW\backend\src\app\cryptography\exec-decrypt.exe"
+set "SRC_PATH=C:\Users\Hii\Desktop\Server_For_DVGW\backend\src\app\cryptography\src"
 
 REM Compile with g++
 g++ -o "%OUTPUT_PATH%" ^

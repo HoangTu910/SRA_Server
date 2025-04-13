@@ -10,6 +10,7 @@ const DATA_TOPIC = 'sensors/data';
 const TOPIC_TO_RECEIVE_PUBLIC_FROM_CLIENT = 'encrypt/dhexchange';
 const TOPIC_HANDSHAKE_ECDH = 'handshake/ecdh';
 const TOPIC_HANDSHAKE_ECDH_SEND = 'handshake-send/ecdh';
+const TOPIC_METRICS = 'metrics/data';
 
 const RESET_SEQUENCE_PACKET =  Buffer.from([0x11]);
 
@@ -246,13 +247,13 @@ const TOPICS = {
     HANDSHAKE_ACK: 'handshake/ack',
     SENSOR_DATA: 'sensors/data',
     CLIENT_PUBLIC_KEY: 'topic/client-public-key', 
-    ECDH_HANDSHAKE: 'handshake/ecdh'       
+    ECDH_HANDSHAKE: 'handshake/ecdh',
+    METRICS: 'metrics/data',       
   };
   
 const MESSAGE_HANDLERS = {
     [TOPICS.SENSOR_DATA]: handleSensorData,
-    [TOPICS.CLIENT_PUBLIC_KEY]: handleClientPublicKey,
-    [TOPICS.ECDH_HANDSHAKE]: parseFrame
+    [TOPICS.ECDH_HANDSHAKE]: parseFrame,
 };
 
 async function handleSensorData(message) {
@@ -336,6 +337,30 @@ async function handleEcdhHandshake(message, identifierId, packetType) {
         }
         // Implement retry logic or error recovery here
     }
+}
+
+async function handleMetricsFrame(message, identifierId, packetType) {
+    const frame = await parseMetricsFrame(message, identifierId, packetType);
+    if (!frame) {
+        throw new Error('[DAMN] Invalid metrics frame received -_-');
+    }
+    console.log('[SPECIAL PACKET PER MINUTE] Retrived metrics from device: ', frame.metrics);
+    try {
+        await uploadMetricsToFirestore(frame.metrics, identifierId.toString());
+        console.log('[SUCCESS] Metrics uploaded to Firestore');
+    } catch (error) {
+        console.error('[ERROR] Failed to upload metrics to Firestore:', error);
+    }
+}
+
+async function uploadMetricsToFirestore(metrics, deviceId) {
+    const uploadData = {
+        pdr: metrics.pdr,
+        avgLatency: metrics.avgLatency,
+        avgPacket: metrics.avgPacket,
+        deviceId: deviceId
+    };
+    await DeviceDataService.createMetricsData(uploadData, deviceId);
 }
 
 async function handleDataFrame(message, identifierId, packetType) {
@@ -468,14 +493,82 @@ function parseFrame(message) {
         return;
     }
     switch (packetType) {
-        case 0x03: // Handshake Frame
+        case 0x03: 
             return handleEcdhHandshake(message, identifierId, packetType);
-        case 0x01: // Data Frame
+        case 0x01:
             return handleDataFrame(message, identifierId, packetType);
+        case 0x04:
+            return handleMetricsFrame(message, identifierId, packetType);
         default:
-            console.log(`Unexpected packet type: expected 0x01 or 0x03, got 0x${packetType.toString(16)}`);
+            console.log(`Unexpected packet type: expected 0x01, 0x03, 0x04, got 0x${packetType.toString(16)}`);
             return;
     }
+}
+
+async function parseMetricsFrame(message, identifierId, packetType) {
+    const preambleSize = 2;           // uint16_t str_header
+    const identifierIdSize = 4;       // uint32_t str_identifierId
+    const packetTypeSize = 1;         // uint8_t str_packetType
+    const METRICS_SIZE = 3;           // Three uint32_t values in str_metrics array
+    const metricsSize = METRICS_SIZE * 4;  // Each uint32_t is 4 bytes
+    const endMarkerSize = 2;          // uint16_t str_trailer
+
+    // Calculate offsets
+    const preambleOffset = 0;
+    const identifierIdOffset = preambleOffset + preambleSize;              // 2
+    const packetTypeOffset = identifierIdOffset + identifierIdSize;        // 6
+    const metricsOffset = packetTypeOffset + packetTypeSize;              // 7
+    const endMarkerOffset = metricsOffset + metricsSize;                  // 19
+
+    // Validate message length
+    const expectedLength = endMarkerOffset + endMarkerSize; // 21 bytes
+    if (message.length < expectedLength) {
+        throw new Error(`Invalid frame size: expected ${expectedLength} bytes, got ${message.length}`);
+    }
+
+    // Parse the fields from the message Buffer
+    const preamble = message.readUInt16LE(preambleOffset);                
+    const parsedIdentifierId = message.readUInt32LE(identifierIdOffset);  
+    const parsedPacketType = message.readUInt8(packetTypeOffset);         
+
+    // Read metrics values (converting from network byte order)
+    const metrics = new Array(METRICS_SIZE);
+    for (let i = 0; i < METRICS_SIZE; i++) {
+        const networkValue = message.readUInt32BE(metricsOffset + (i * 4)); // Use BE for network byte order
+        // Convert uint32 back to float using ArrayBuffer
+        const buf = new ArrayBuffer(4);
+        const view = new DataView(buf);
+        view.setUint32(0, networkValue, false); // false for big-endian
+        metrics[i] = view.getFloat32(0, false);
+    }
+
+    const endMarker = message.readUInt16LE(endMarkerOffset);
+
+    // Validate frame components
+    if (preamble !== 0xAA55) {
+        throw new Error(`Invalid preamble: expected 0xAA55, got 0x${preamble.toString(16)}`);
+    }
+    if (parsedIdentifierId !== identifierId) {
+        throw new Error(`Invalid identifier ID: expected ${identifierId}, got ${parsedIdentifierId}`);
+    }
+    if (parsedPacketType !== packetType) {
+        throw new Error(`Invalid packet type: expected ${packetType}, got ${parsedPacketType}`);
+    }
+    if (endMarker !== 0xAABB) {
+        throw new Error(`Invalid end marker: expected 0xAABB, got 0x${endMarker.toString(16)}`);
+    }
+
+    return {
+        preamble,
+        identifierId: parsedIdentifierId,
+        packetType: parsedPacketType,
+        metrics: {
+            pdr: Math.round(metrics[0] * 100) / 100,              // Packet Delivery Ratio (%)
+            avgLatency: Math.round(metrics[1] * 100) / 100,       // Average Latency (ms) 
+            avgPacket: Math.round(metrics[2] * 100) / 100         // Packets received this minute
+        },
+        endMarker
+    };
 }
 
 async function parseHandshakeFrame(message, identifierId, packetType) {
@@ -570,7 +663,7 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
         throw new Error(`Invalid sequence number: got ${s_sequenceNumber}, expected ${expectedSequenceNumber}`);
     }
     if (typeof expectedSequenceNumber !== 'undefined') {
-        expectedSequenceNumber = (expectedSequenceNumber + 1) % 65536; // Updated for 4-byte sequence number
+        expectedSequenceNumber = (expectedSequenceNumber + 1) % 12; // Updated for 4-byte sequence number
     }
 
     const s_nonce = message.subarray(11, 11 + NONCE_SIZE); // offset 11, 16 bytes
@@ -678,6 +771,13 @@ function initMQTT() {
                 console.error(`Failed to subscribe to ${TOPIC_HANDSHAKE_ECDH}:`, err);
             } else {
                 console.log(`-- Subscribed to [${TOPIC_HANDSHAKE_ECDH}]`);
+            }
+        });
+        client.subscribe(TOPIC_METRICS, { qos: 1 }, (err) => {
+            if (err) {
+                console.error(`Failed to subscribe to ${TOPIC_METRICS}:`, err);
+            } else {
+                console.log(`-- Subscribed to [${TOPIC_METRICS}]`);
             }
         });
     });

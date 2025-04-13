@@ -108,18 +108,74 @@ exports.getDataSensorFromDatabaseController = async(req, res) => {
   }
 }
 
-  exports.getRealTimeDataController = async (req, res) => {
-    try {
-      const { deviceId } = req.body;
-  
-      DeviceDataService.getRealTimeData(deviceId, (error, data) => {
-        if (error) {
-          return res.status(500).json({ error });
-        }
-        return res.json(data);
-      });
-    } catch (err) {
-      console.error('Error in getRealTimeData controller:', err);
-      res.status(500).send('Server error');
+exports.getRealTimeDataController = async (req, res) => {
+  try {
+    const { deviceId } = req.body;
+
+    DeviceDataService.getRealTimeData(deviceId, (error, data) => {
+      if (error) {
+        return res.status(500).json({ error });
+      }
+      return res.json(data);
+    });
+  } catch (err) {
+    console.error('Error in getRealTimeData controller:', err);
+    res.status(500).send('Server error');
+  }
+};
+
+/*New implementation for SRA Ver 3*/
+exports.getMetricsDataController = async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const { limit } = req.query;
+
+    if (!deviceId) {
+      return res.status(400).json({ error: 'Device ID is required' });
     }
-  };
+
+    const metrics = await DeviceDataService.getMetricsData(deviceId, parseInt(limit) || 10);
+    
+    if (!metrics || metrics.length === 0) {
+      return res.status(404).json({ message: 'No metrics found for this device' });
+    }
+
+    res.json({ 
+      success: true, 
+      data: metrics 
+    });
+  } catch (error) {
+    console.error('Error fetching metrics:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch metrics data' 
+    });
+  }
+};
+
+exports.getLatestMetricsController = async (req, res) => {
+  try {
+    const { deviceId } = req.body;
+
+    if (!deviceId) {
+      return res.status(400).json({ error: 'Device ID is required' });
+    }
+
+    const metrics = await DeviceDataService.getMetricsData(deviceId, 1);
+    
+    if (!metrics || metrics.length === 0) {
+      return res.status(404).json({ message: 'No metrics found for this device' });
+    }
+
+    res.json({ 
+      success: true, 
+      data: metrics[0] 
+    });
+  } catch (error) {
+    console.error('Error fetching latest metrics:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to fetch latest metrics data' 
+    });
+  }
+}

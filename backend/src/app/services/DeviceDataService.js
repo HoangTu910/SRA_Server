@@ -172,5 +172,49 @@ class DeviceDataService {
       callback(error, null);
     }
   }
+
+  /*New implementation SRA Ver 3*/
+  async createMetricsData(data, deviceId) {
+    try {
+        console.log('Attempting to create metrics data:', data);
+        const docRef = DeviceDataCollection.doc(deviceId);
+        await docRef.set({
+            pdr: data.pdr,
+            avgLatency: data.avgLatency,
+            avgPacket: data.avgPacket,
+            createdAt: firestore.FieldValue.serverTimestamp(),
+        });
+        console.log('Metrics data created with ID:', docRef.id);
+        return docRef.id;
+    } catch (error) {
+        console.log('Error creating metrics data:', error);
+        throw error;
+    }
+  }
+
+  async getMetricsData(deviceId, limit = 10) {
+    try {
+        // Get the device document directly since metrics are stored in the document
+        const docRef = DeviceDataCollection.doc(deviceId);
+        const doc = await docRef.get();
+
+        if (!doc.exists) {
+            return [];
+        }
+
+        const data = doc.data();
+        return [{
+            id: doc.id,
+            pdr: data.pdr,
+            avgLatency: data.avgLatency,
+            avgPacket: data.avgPacket,
+            createdAt: data.createdAt
+        }];
+
+    } catch (error) {
+        console.error('Error retrieving metrics data:', error);
+        throw error;
+    }
+  }
 }
 module.exports = new DeviceDataService()

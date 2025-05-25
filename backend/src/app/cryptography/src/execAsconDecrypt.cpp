@@ -61,7 +61,7 @@ int main(int argc, char *argv[])
     unsigned long long plaintextLen = 0;
 
     // Call the decryption function.
-    std::vector<unsigned char> associatedData = {0x48, 0x45, 0x4C, 0x4C, 0x4F};
+    std::vector<unsigned char> associatedData = {0x98, 0x95, 0x9C, 0x9C, 0x9F};
 
     int ret = Ascon::crypto_aead_decrypt(
         plaintext.data(),  // m: pointer to plaintext output
@@ -77,7 +77,7 @@ int main(int argc, char *argv[])
 
     if (ret != 0)
     {
-        std::cerr << "Decryption failed" << std::endl;
+        std::cerr << "Decryption failed from C++" << std::endl;
         return 1;
     }
 

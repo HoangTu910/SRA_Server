@@ -66,3 +66,29 @@ aedes.on('publish', (packet, client) => {
     // console.log(`📡 [MESSAGE_PUBLISHED] ${client ? client.id : 'BROKER'} → ${packet.topic}`);
   });
 });
+
+
+
+// const aedes = require('aedes')();
+// const tls = require('tls');
+// const fs = require('fs');
+
+// const PORT_TLS = 8883; // Port TLS cho MQTTS
+
+// // Nạp chứng chỉ và khóa TLS
+// const tlsOptions = {
+//   key: fs.readFileSync('./certs/server.key'),
+//   cert: fs.readFileSync('./certs/server.crt'),
+//   ca: fs.readFileSync('./certs/ca.crt'), // Có thể không cần nếu bạn không yêu cầu client auth
+//   requestCert: false,                   // Không bắt buộc client có cert
+//   rejectUnauthorized: false            // Cho phép client không xác thực cert
+// };
+
+// // Tạo server TLS
+// const server = tls.createServer(tlsOptions, aedes.handle);
+
+// server.listen(PORT_TLS, () => {
+//   console.log(`🔐 MQTT Broker with TLS (MQTTS) is running on port ${PORT_TLS}`);
+// });
+
+

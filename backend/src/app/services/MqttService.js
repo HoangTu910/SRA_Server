@@ -12,7 +12,12 @@ const TOPIC_HANDSHAKE_ECDH = 'handshake/ecdh';
 const TOPIC_HANDSHAKE_ECDH_SEND = 'handshake-send/ecdh';
 const TOPIC_METRICS = 'metrics/data';
 
+const MAX_SEQUENCE_NUMBER = 11;
+
 const RESET_SEQUENCE_PACKET =  Buffer.from([0x11]);
+
+let derivationIndex = 0;
+const MAX_DERIVATION_INDEX = 65535;
 
 const THRESHOLD_FOR_REJECTING_SEQUENCE = 10;
 
@@ -176,6 +181,66 @@ function reconstructDecryptedData(decryptedtext) {
     return result;
 }
 
+async function deriveKey(masterKey, context, index) {
+    return new Promise((resolve, reject) => {
+        // Take only first 48 bytes of master key
+        const truncatedKey = masterKey.slice(0, 96);
+
+        // Validate inputs
+        if (truncatedKey.length !== 96) {
+            return reject(new Error(`Invalid master key length: ${truncatedKey.length}`));
+        }
+
+        const contextHex = Buffer.isBuffer(context) ? 
+            context.toString('hex') : 
+            (typeof context === 'string' && /^[0-9a-fA-F]+$/.test(context)) ?
+                context :
+                Buffer.from(context).toString('hex');
+
+        // Log exact command being executed
+        const executablePath = path.resolve(__dirname, '../cryptography/exec-derive-key.exe');
+        const args = [truncatedKey, contextHex, index.toString()];
+        
+        // console.log('Executing command:', executablePath);
+        // console.log('Arguments:', JSON.stringify(args, null, 2));
+
+        const child = execFile(executablePath, args, { 
+            timeout: 5000,
+            windowsHide: true // Prevent window from showing
+        }, (error, stdout, stderr) => {
+            // Check if we have valid output regardless of error code
+            const output = stdout?.trim();
+            if (output && /^[0-9a-f]{96}$/i.test(output)) {
+                console.log('Derived key successfully:', output.slice(0, 16) + '...');
+                return resolve(output.toLowerCase());
+            }
+
+            // If no valid output, handle error normally
+            if (error) {
+                console.error('Key derivation failed:', {
+                    error: error.message,
+                    code: error.code,
+                    signal: error.signal,
+                    masterKey: truncatedKey.slice(0, 16) + '...',
+                    contextHex: contextHex,
+                    index: index,
+                    stdout: stdout?.trim(),
+                    stderr: stderr?.trim()
+                });
+                return reject(error);
+            }
+
+            return reject(new Error('No valid key output received'));
+        });
+
+        // Add error handler for the child process
+        child.on('error', (error) => {
+            console.error('Child process error:', error);
+            reject(error);
+        });
+    });
+}
+
 function encryptData(plaintextHex, nonceHex, keyHex, associatedDataHex) {
     return new Promise((resolve, reject) => {
         const executablePath = path.resolve(__dirname, '../cryptography/exec-encrypt.exe');
@@ -204,7 +269,7 @@ function encryptData(plaintextHex, nonceHex, keyHex, associatedDataHex) {
     });
 }
 
-function decryptData(ciphertextHex, nonceHex, keyHex) {
+async function decryptData(ciphertextHex, nonceHex, keyHex) {
     return new Promise((resolve, reject) => {
         const executablePath = path.resolve(__dirname, '../cryptography/exec-decrypt.exe');
 
@@ -293,11 +358,11 @@ async function handleEcdhHandshake(message, identifierId, packetType) {
     try {
         // State 1: Parse and validate frame
         const frame = await parseHandshakeFrame(message, identifierId, packetType);
-        // logHandshakeFrame(frame);
+        logHandshakeFrame(frame);
 
-        // State 2: Store client public key
-        serverReceivePublic = frame.publicKey;
-        // console.log('Received client public key:', serverReceivePublic.toString('hex'));
+        // State 2: Store client public key - Fix hex conversion
+        serverReceivePublic = frame.publicKey.toString('hex');
+        console.log('-- Received client public key:', serverReceivePublic.slice(0, 16) + '...');
 
         // State 3: Generate server keys
         const keysInitialized = await initializeKeys();
@@ -306,37 +371,55 @@ async function handleEcdhHandshake(message, identifierId, packetType) {
         }
         
         // State 4: Publish server public key
-        const pubKeyBuffer = Buffer.isBuffer(serverPublicKey) ? serverPublicKey : Buffer.from(serverPublicKey, 'hex');
-        client.publish(TOPIC_HANDSHAKE_ECDH_SEND, pubKeyBuffer, { qos: 1 }, (err) => {
-            if (err) {
-                reject(new Error(`Publish failed: ${err.message}`));
-            } else {
-                // console.log('-- Successfully published public key to', TOPIC_HANDSHAKE_ECDH_SEND);
-            }
+        const pubKeyBuffer = Buffer.from(serverPublicKey, 'hex');
+        await new Promise((resolve, reject) => {
+            client.publish(TOPIC_HANDSHAKE_ECDH_SEND, pubKeyBuffer, { qos: 1 }, (err) => {
+                if (err) {
+                    reject(new Error(`Publish failed: ${err.message}`));
+                } else {
+                    console.log('-- Successfully published server public key');
+                    resolve();
+                }
+            });
         });
 
-        //State 5: Server compute secret key
-        serverReceivePublic = serverReceivePublic.toString('hex');
+        // State 5: Generate secret key - Remove double hex conversion
         serverSecretKey = await generateSecretKey(serverPrivateKey, serverReceivePublic);
-        // console.log("-- Generated secret key:", serverSecretKey.toString('hex').slice(0, 16) + "...");
-        console.log("-- Generated secret key");
-
-    } catch (error) {
-        if (error instanceof TypeError) {
-            console.error('Type Error in handshake:', error.message);
-            console.error('Stack:', error.stack);
-        } else if (error.message.includes('Failed to generate')) {
-            console.error('Key Generation Error:', error.message);
-            // Implement retry for key generation
-        } else if (error.message.includes('Publish failed')) {
-            console.error('MQTT Publish Error:', error.message);
-            // Implement retry for publishing
-        } else {
-            console.error('Unexpected Handshake Error:', error.message);
-            console.error('Stack:', error.stack);
+        if (!serverSecretKey) {
+            throw new Error('Failed to generate secret key');
         }
-        // Implement retry logic or error recovery here
+        console.log("-- Generated secret key:", serverSecretKey.slice(0, 16) + "...");
+
+        // Add verification
+        if (!verifyKeyExchange()) {
+            throw new Error('Key exchange verification failed');
+        }
+
+        return true;
+    } catch (error) {
+        console.error('Handshake Error:', error);
+        throw error;
     }
+}
+
+function verifyKeyExchange() {
+    if (!serverPrivateKey || !serverReceivePublic || !serverSecretKey) {
+        console.error('Missing key components:', {
+            hasPrivateKey: !!serverPrivateKey,
+            hasPublicKey: !!serverReceivePublic,
+            hasSecretKey: !!serverSecretKey
+        });
+        return false;
+    }
+
+    // Verify all keys are in hex format
+    const hexRegex = /^[0-9a-fA-F]+$/;
+    if (!hexRegex.test(serverSecretKey)) {
+        console.error('Invalid secret key format');
+        return false;
+    }
+
+    return true;
 }
 
 async function handleMetricsFrame(message, identifierId, packetType) {
@@ -367,6 +450,7 @@ async function handleDataFrame(message, identifierId, packetType) {
     const ACK_PACKET = Buffer.from([0x02]);
     try {
         // State 1: Parse and validate the frame
+        console.log("Start Parsing Data Frame");
         const frame = await parseDataFrame(message, identifierId, packetType);
         
         if (!frame) {
@@ -407,7 +491,7 @@ async function handleDataFrame(message, identifierId, packetType) {
                 secretKeyNum ^= secretKeyBytes[i] << ((i % 2) * 8); // Shift and XOR alternately
             }
             console.log(`-- Safe Counter: ${safeCounter}`);
-            expectedSequenceNumber = (safeCounter ^ secretKeyNum) % 65536;
+            expectedSequenceNumber = (safeCounter ^ secretKeyNum) % MAX_SEQUENCE_NUMBER;
             console.log(`-- Resetting sequence number to ${expectedSequenceNumber}`);
             await publishSignalForResettingSequence(TOPIC_HANDSHAKE_ECDH_SEND, RESET_SEQUENCE_PACKET);
             failedSequenceNumber = 0;
@@ -479,7 +563,7 @@ async function uploadToFirestore(data) {
     await DeviceDataService.createDeviceData(uploadData, data.deviceId);
 }
 
-function parseFrame(message) {
+async function parseFrame(message) {
     if (message.length < 7) {
         throw new Error("Message too short to parse header");
     }
@@ -643,6 +727,9 @@ function MACCompute(inputNumber) {
 }
 
 async function parseDataFrame(message, expectedIdentifierId, expectedPacketType) {
+    if (!verifyKeyExchange()) {
+        throw new Error('Invalid key state for decryption');
+    }
     const NONCE_SIZE = 16;
     const AUTH_TAG_SIZE = 16; 
 
@@ -663,7 +750,7 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
         throw new Error(`Invalid sequence number: got ${s_sequenceNumber}, expected ${expectedSequenceNumber}`);
     }
     if (typeof expectedSequenceNumber !== 'undefined') {
-        expectedSequenceNumber = (expectedSequenceNumber + 1) % 12; // Updated for 4-byte sequence number
+        expectedSequenceNumber = (expectedSequenceNumber + 1) % MAX_SEQUENCE_NUMBER; // Updated for 4-byte sequence number
     }
 
     const s_nonce = message.subarray(11, 11 + NONCE_SIZE); // offset 11, 16 bytes
@@ -683,17 +770,42 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
     const encryptedHex = s_encryptedPayload.toString('hex');
     const nonceHex = s_nonce.toString('hex');
 
-    let decryptedText = null;
-    try {
-        const decryptionResult = await decryptData(encryptedHex, nonceHex, serverSecretKey);
-        decryptedText = decryptionResult.decryptedText;
-        if (!decryptedText) {
-            console.warn('[WARN] Decryption returned empty data.');
-        }
-    } catch (error) {
-        console.error('[ERROR] Decryption failed:', error);
-    }
+    let decryptedTextGet = null;
 
+    // console.log(encryptedHex.toString(16));
+    // console.log(serverSecretKey.toString(16));
+    // console.log(nonceHex.toString(16));
+
+    const associatedData = [0x98, 0x95, 0x9C, 0x9C, 0x9F];
+    const associatedDataHex = Buffer.from(associatedData).toString('hex');
+
+    // console.log('Associated Data (hex):', associatedDataHex);
+    // console.log("Server Secret Key:", serverSecretKey);
+
+    const sessionKey = await deriveKey(
+        serverSecretKey,
+        associatedDataHex,  
+        derivationIndex
+    );
+    derivationIndex = (derivationIndex + 1) % MAX_DERIVATION_INDEX;
+    console.log('-- Session key generated:', sessionKey.slice(0, 16) + '...');
+    
+    try {
+        const decryptionResult = await decryptData(encryptedHex, nonceHex, sessionKey);
+        if (!decryptionResult || !decryptionResult.decryptedText) {
+            throw new Error('Decryption produced no result');
+        }
+        decryptedTextGet = decryptionResult.decryptedText;
+    } catch (error) {
+        console.error('Decryption failed:', error);
+        console.log('Encryption parameters:', {
+            encryptedHexLength: encryptedHex.length,
+            nonceHexLength: nonceHex.length,
+            secretKeyLength: serverSecretKey.length
+        });
+        throw error;
+    }
+    
     if (s_endMarker !== 0xAABB) { 
         throw new Error(`End marker mismatch: expected ${0xAABB.toString(16)}, got ${s_endMarker.toString(16)}`);
     }
@@ -708,7 +820,7 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
         encryptedPayload: s_encryptedPayload,
         macTag: s_macTag,
         endMarker: s_endMarker,
-        decryptedText: decryptedText
+        decryptedText: decryptedTextGet
     };
 }
 
@@ -717,7 +829,7 @@ function logHandshakeFrame(frame) {
     let pubKeyHex = frame.publicKey.toString('hex');
 
     if (pubKeyHex.length > 32) {
-        pubKeyHex = pubKeyHex.substring(0, 32) + '...';
+        pubKeyHex = pubKeyHex.substring(0, 16) + '...';
     }
 
     console.log("-- Parsed Handshake Frame:");
@@ -725,7 +837,6 @@ function logHandshakeFrame(frame) {
         { "Field": "Preamble",       "Value": `0x${frame.preamble.toString(16)}` },
         { "Field": "Identifier ID",  "Value": `0x${frame.identifierId.toString(16)}` },
         { "Field": "Packet Type",    "Value": `0x${frame.packetType.toString(16)}` },
-        { "Field": "Sequence Number", "Value": frame.sequenceNumber },
         { "Field": "Public Key",     "Value": pubKeyHex },
         { "Field": "End Marker",     "Value": `0x${frame.endMarker.toString(16)}` }
     ]);
@@ -782,19 +893,41 @@ function initMQTT() {
         });
     });
 
+    // client.on('message', async (topic, message) => {
+    //     const handler = MESSAGE_HANDLERS[topic];
+    //     if (handler) {
+    //       try {
+    //         const startTime = Date.now();
+    //         await handler(message);
+    //         const endTime = Date.now();
+    //         console.log(`-> Processed in ${endTime - startTime}ms`);
+    //       } catch (error) {
+    //         console.error(`Error handling ${topic}:`, error);
+    //       }
+    //     } else {
+    //       console.warn(`No handler for topic: ${topic}`);
+    //     }
+    // });
+
     client.on('message', async (topic, message) => {
-        const handler = MESSAGE_HANDLERS[topic];
-        if (handler) {
-          try {
+        try {
             const startTime = Date.now();
-            await handler(message);
+            if (topic === TOPICS.SENSOR_DATA) {
+                await handleSensorData(message);
+            } else if (topic === TOPICS.ECDH_HANDSHAKE) {
+                console.log("-- Received ECDH Handshake message");
+                await parseFrame(message);
+            } else if (topic === TOPIC_METRICS) {
+                await parseFrame(message); 
+            } else {
+                console.warn(`No handler for topic: ${topic}`);
+                return;
+            }
+    
             const endTime = Date.now();
-            // console.log(`-> Processed in ${endTime - startTime}ms`);
-          } catch (error) {
+            console.log(`-> Processed ${topic} in ${endTime - startTime}ms`);
+        } catch (error) {
             console.error(`Error handling ${topic}:`, error);
-          }
-        } else {
-          console.warn(`No handler for topic: ${topic}`);
         }
     });
 

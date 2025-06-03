@@ -29,7 +29,8 @@ const allowedTopics = new Set([
   'handshake/ack',
   'encrypt/dhexchange',
   'handshake/ecdh',
-  'handshake-send/ecdh'
+  'handshake-send/ecdh',
+  'init/session'
 ]);
 
 aedes.authorizePublish = (client, packet, callback) => {

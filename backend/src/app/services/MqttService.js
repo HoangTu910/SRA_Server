@@ -10,6 +10,7 @@ const DATA_TOPIC = 'sensors/data';
 const TOPIC_TO_RECEIVE_PUBLIC_FROM_CLIENT = 'encrypt/dhexchange';
 const TOPIC_HANDSHAKE_ECDH = 'handshake/ecdh';
 const TOPIC_HANDSHAKE_ECDH_SEND = 'handshake-send/ecdh';
+const TOPIC_INITIAL_SESSION = 'init/session';
 const TOPIC_METRICS = 'metrics/data';
 
 const MAX_SEQUENCE_NUMBER = 11;
@@ -436,6 +437,18 @@ async function handleMetricsFrame(message, identifierId, packetType) {
     }
 }
 
+async function handleInitialSession(message, identifierId, packetType) {
+    const PACKET = Buffer.alloc(3);
+    PACKET[0] = safeCounter;
+    PACKET.writeUInt16BE(derivationIndex, 1);
+    const frame = await parseInitialSessionFrame(message, identifierId, packetType);
+    if (!frame) {
+        throw new Error('[DAMN] Invalid initial session frame received -_-');
+    }
+    console.log('[INITIAL SESSION] Retrived initial session data from device: ', frame.identifierId);
+    await publishSafeCounter(TOPIC_HANDSHAKE_ECDH_SEND, PACKET);
+}
+
 async function uploadMetricsToFirestore(metrics, deviceId) {
     const uploadData = {
         pdr: metrics.pdr,
@@ -465,6 +478,7 @@ async function handleDataFrame(message, identifierId, packetType) {
             throw new Error('[DAMN] Failed to parse sensor data from decrypted payload -_-');
         }
         console.log(`[2/3] Parsed sensor data completed`);
+        console.log('Safe counter current: ', safeCounter);
         console.log(data);
 
         //State ?: Send data to database (FIX ME)
@@ -512,8 +526,22 @@ function publishAck(topic, ackPacket) {
             if (err) {
                 reject(new Error(`Failed to publish ACK to ${topic}: ${err.message}`));
             } else {
-                safeCounter = (safeCounter + ((safeCounter << 3) ^ (safeCounter >> 2) ^ 7)) % 65536;
+                safeCounter = (safeCounter + ((safeCounter << 3) ^ (safeCounter >> 2) ^ 7)) % 256;
                 console.log(`[3/3] Publish ACK to ${topic} completed`);
+                resolve();
+            }
+        });
+    });
+}
+
+function publishSafeCounter(topic, ackPacket) {
+    return new Promise((resolve, reject) => {
+        client.publish(topic, ackPacket, { qos: 1 }, (err) => {
+            if (err) {
+                reject(new Error(`Failed to publish safe counter to ${topic}: ${err.message}`));
+            } else {
+                // safeCounter = (safeCounter + ((safeCounter << 3) ^ (safeCounter >> 2) ^ 7)) % 65536;
+                console.log(`Publish safe counter to ${topic} completed`);
                 resolve();
             }
         });
@@ -583,10 +611,57 @@ async function parseFrame(message) {
             return handleDataFrame(message, identifierId, packetType);
         case 0x04:
             return handleMetricsFrame(message, identifierId, packetType);
+        case 0x05:
+            return handleInitialSession(message, identifierId, packetType);
         default:
-            console.log(`Unexpected packet type: expected 0x01, 0x03, 0x04, got 0x${packetType.toString(16)}`);
+            console.log(`Unexpected packet type: expected 0x01, 0x03, 0x04, 0x05, got 0x${packetType.toString(16)}`);
             return;
     }
+}
+
+async function parseInitialSessionFrame(message, identifierId, packetType) {
+    const preambleSize = 2;           // uint16_t
+    const identifierIdSize = 4;       // uint32_t
+    const packetTypeSize = 1;         // uint8_t
+    const endMarkerSize = 2;          // uint16_t
+
+    // Calculate offsets
+    const preambleOffset = 0;
+    const identifierIdOffset = preambleOffset + preambleSize;              // 2
+    const packetTypeOffset = identifierIdOffset + identifierIdSize;        // 6
+    const endMarkerOffset = packetTypeOffset + packetTypeSize;              // 7
+
+    // Validate message length
+    const expectedLength = endMarkerOffset + endMarkerSize; // 9 bytes
+    if (message.length < expectedLength) {
+        throw new Error(`Invalid frame size: expected ${expectedLength} bytes, got ${message.length}`);
+    }
+    // Parse the fields from the message Buffer
+    const preamble = message.readUInt16LE(preambleOffset);
+    const parsedIdentifierId = message.readUInt32LE(identifierIdOffset);
+    const parsedPacketType = message.readUInt8(packetTypeOffset);
+    const endMarker = message.readUInt16LE(endMarkerOffset);
+
+    // Validate frame components
+    if (preamble !== 0xAA55) {
+        throw new Error(`Invalid preamble: expected 0xAA55, got 0x${preamble.toString(16)}`);
+    }
+    if (parsedIdentifierId !== identifierId) {
+        throw new Error(`Invalid identifier ID: expected ${identifierId}, got ${parsedIdentifierId}`);
+    }
+    if (parsedPacketType !== packetType) {
+        throw new Error(`Invalid packet type: expected ${packetType}, got ${parsedPacketType}`);
+    }
+    if (endMarker !== 0xAABB) {
+        throw new Error(`Invalid end marker: expected 0xAABB, got 0x${endMarker.toString(16)}`);
+    }
+
+    return {
+        preamble,
+        identifierId: parsedIdentifierId,
+        packetType: parsedPacketType,
+        endMarker
+    };
 }
 
 async function parseMetricsFrame(message, identifierId, packetType) {
@@ -752,6 +827,8 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
     if (typeof expectedSequenceNumber !== 'undefined') {
         expectedSequenceNumber = (expectedSequenceNumber + 1) % MAX_SEQUENCE_NUMBER; // Updated for 4-byte sequence number
     }
+    derivationIndex = (derivationIndex + 1) % MAX_DERIVATION_INDEX;
+
 
     const s_nonce = message.subarray(11, 11 + NONCE_SIZE); // offset 11, 16 bytes
     const s_payloadLength = message.readUInt16LE(11 + NONCE_SIZE); // offset 27, 2 bytes (Updated to 2 bytes)
@@ -787,8 +864,8 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
         associatedDataHex,  
         derivationIndex
     );
-    derivationIndex = (derivationIndex + 1) % MAX_DERIVATION_INDEX;
     console.log('-- Session key generated:', sessionKey.slice(0, 16) + '...');
+    console.log('-- Derivation index', derivationIndex);
     
     try {
         const decryptionResult = await decryptData(encryptedHex, nonceHex, sessionKey);
@@ -891,23 +968,15 @@ function initMQTT() {
                 console.log(`-- Subscribed to [${TOPIC_METRICS}]`);
             }
         });
-    });
 
-    // client.on('message', async (topic, message) => {
-    //     const handler = MESSAGE_HANDLERS[topic];
-    //     if (handler) {
-    //       try {
-    //         const startTime = Date.now();
-    //         await handler(message);
-    //         const endTime = Date.now();
-    //         console.log(`-> Processed in ${endTime - startTime}ms`);
-    //       } catch (error) {
-    //         console.error(`Error handling ${topic}:`, error);
-    //       }
-    //     } else {
-    //       console.warn(`No handler for topic: ${topic}`);
-    //     }
-    // });
+        client.subscribe(TOPIC_INITIAL_SESSION, { qos: 1 }, (err) => {
+            if (err) {
+                console.error(`Failed to subscribe to ${TOPIC_INITIAL_SESSION}:`, err);
+            } else {
+                console.log(`-- Subscribed to [${TOPIC_INITIAL_SESSION}]`);
+            }
+        });
+    });
 
     client.on('message', async (topic, message) => {
         try {
@@ -919,6 +988,8 @@ function initMQTT() {
                 await parseFrame(message);
             } else if (topic === TOPIC_METRICS) {
                 await parseFrame(message); 
+            } else if (topic === TOPIC_INITIAL_SESSION) {
+                await parseFrame(message);
             } else {
                 console.warn(`No handler for topic: ${topic}`);
                 return;

@@ -5,7 +5,7 @@ import random
 from binascii import hexlify
 
 
-BROKER_ADDRESS = "192.168.1.7"  
+BROKER_ADDRESS = "192.168.109.56"  
 BROKER_PORT = 1885
 TOPIC = "handshake/ecdh"
 USERNAME = "admin"  
@@ -71,7 +71,7 @@ def replay_attack_mqtt():
         return 
 
     #replay the data frame 10 times
-    for i in range (0, 20):
+    for i in range (0, 11):
         print("Replaying the captured Data Frame...")
         data_frame = create_data_frame()
         send_data_frame_mqtt(data_frame, client)

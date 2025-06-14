@@ -555,7 +555,7 @@ function publishSignalForResettingSequence(topic, signal) {
             if (err) {
                 reject(new Error(`Failed to publish signal to ${topic}: ${err.message}`));
             } else {
-                derivationIndex = (derivationIndex + 1) % MAX_DERIVATION_INDEX;
+                // derivationIndex = (derivationIndex + 1) % MAX_DERIVATION_INDEX;
                 console.log(`[*] Publish Signal to ${topic} completed`);
                 resolve();
             }

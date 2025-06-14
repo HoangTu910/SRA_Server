@@ -17,7 +17,7 @@ const MAX_SEQUENCE_NUMBER = 11;
 
 const RESET_SEQUENCE_PACKET =  Buffer.from([0x11]);
 
-let derivationIndex = 0;
+let derivationIndex = 1;
 const MAX_DERIVATION_INDEX = 65535;
 
 const THRESHOLD_FOR_REJECTING_SEQUENCE = 10;
@@ -526,6 +526,7 @@ function publishAck(topic, ackPacket) {
             if (err) {
                 reject(new Error(`Failed to publish ACK to ${topic}: ${err.message}`));
             } else {
+                derivationIndex = (derivationIndex + 1) % MAX_DERIVATION_INDEX;
                 safeCounter = (safeCounter + ((safeCounter << 3) ^ (safeCounter >> 2) ^ 7)) % 256;
                 console.log(`[3/3] Publish ACK to ${topic} completed`);
                 resolve();
@@ -554,6 +555,7 @@ function publishSignalForResettingSequence(topic, signal) {
             if (err) {
                 reject(new Error(`Failed to publish signal to ${topic}: ${err.message}`));
             } else {
+                derivationIndex = (derivationIndex + 1) % MAX_DERIVATION_INDEX;
                 console.log(`[*] Publish Signal to ${topic} completed`);
                 resolve();
             }
@@ -827,7 +829,6 @@ async function parseDataFrame(message, expectedIdentifierId, expectedPacketType)
     if (typeof expectedSequenceNumber !== 'undefined') {
         expectedSequenceNumber = (expectedSequenceNumber + 1) % MAX_SEQUENCE_NUMBER; // Updated for 4-byte sequence number
     }
-    derivationIndex = (derivationIndex + 1) % MAX_DERIVATION_INDEX;
 
 
     const s_nonce = message.subarray(11, 11 + NONCE_SIZE); // offset 11, 16 bytes

@@ -122,10 +122,10 @@ function parseSensorData(hexString) {
     }
 
     let data = {
-        heartRate: bytes[0],     
-        spo2: bytes[1],         
-        temperature: bytes[2],   
-        acceleration: bytes[3]   
+        data1: bytes[0],     
+        data2: bytes[1],         
+        data3: bytes[2],   
+        data4: bytes[3]   
     };
 
     return data;
@@ -441,6 +441,7 @@ async function handleInitialSession(message, identifierId, packetType) {
     const PACKET = Buffer.alloc(3);
     PACKET[0] = safeCounter;
     PACKET.writeUInt16BE(derivationIndex, 1);
+    expectedSequenceNumber = 0; // reset sequence when initial session
     const frame = await parseInitialSessionFrame(message, identifierId, packetType);
     if (!frame) {
         throw new Error('[DAMN] Invalid initial session frame received -_-');
@@ -775,7 +776,7 @@ async function parseHandshakeFrame(message, identifierId, packetType) {
     let plaintext = "";
     const { encryptedText, authTagHex } = await encryptData(plaintext, nonceHex, serverPresharedKey, associatedDataHex);
     if(authTagHex !== authTag.toString('hex')) {
-        console.log(`MAC tag mismatch: expected ${authTag.toString('hex')}, got ${authTagHex}`);
+        console.log(`Auth tag mismatch: expected ${authTag.toString('hex')}, got ${authTagHex}`);
     }
     
     // Return the parsed frame
@@ -916,6 +917,8 @@ function logHandshakeFrame(frame) {
         { "Field": "Identifier ID",  "Value": `0x${frame.identifierId.toString(16)}` },
         { "Field": "Packet Type",    "Value": `0x${frame.packetType.toString(16)}` },
         { "Field": "Public Key",     "Value": pubKeyHex },
+        { "Field": "Nonce",          "Value": frame.nonce.toString('hex') },
+        { "Field": "Auth Tag",       "Value": frame.authTag.toString('hex') },
         { "Field": "End Marker",     "Value": `0x${frame.endMarker.toString(16)}` }
     ]);
 }
@@ -930,7 +933,7 @@ function logServerDataFrame(frame) {
         { "Field": "Nonce", "Value": frame.nonce.toString('hex') },
         { "Field": "Payload Length", "Value": frame.payloadLength },
         { "Field": "Encrypted Payload", "Value": frame.encryptedPayload.toString('hex') },
-        { "Field": "MAC Tag", "Value": frame.macTag.toString('hex') },
+        { "Field": "Auth Tag", "Value": frame.macTag.toString('hex') },
         { "Field": "End Marker", "Value": `0x${frame.endMarker.toString(16)}`}
     ]);
 }

@@ -12,10 +12,11 @@ const TOPIC_HANDSHAKE_ECDH = 'handshake/ecdh';
 const TOPIC_HANDSHAKE_ECDH_SEND = 'handshake-send/ecdh';
 const TOPIC_INITIAL_SESSION = 'init/session';
 const TOPIC_METRICS = 'metrics/data';
+let IDENTIFIER = 'NONE'
 
 const MAX_SEQUENCE_NUMBER = 11;
 
-const RESET_SEQUENCE_PACKET =  Buffer.from([0x11]);
+const RESET_SEQUENCE_PACKET = 0x11;
 
 let derivationIndex = 1;
 const MAX_DERIVATION_INDEX = 65535;
@@ -373,8 +374,12 @@ async function handleEcdhHandshake(message, identifierId, packetType) {
         
         // State 4: Publish server public key
         const pubKeyBuffer = Buffer.from(serverPublicKey, 'hex');
+        const SOF = Buffer.from([0xAA, 0x55]);
+        const ID  = Buffer.from([0x08, 0x11, 0x09, 0x10]);  
+        const EOF = Buffer.from([0xAA, 0xBB]);
+        const frameSend = Buffer.concat([SOF, ID, pubKeyBuffer, EOF]);
         await new Promise((resolve, reject) => {
-            client.publish(TOPIC_HANDSHAKE_ECDH_SEND, pubKeyBuffer, { qos: 1 }, (err) => {
+            client.publish(TOPIC_HANDSHAKE_ECDH_SEND, frameSend, { qos: 1 }, (err) => {
                 if (err) {
                     reject(new Error(`Publish failed: ${err.message}`));
                 } else {
@@ -437,6 +442,19 @@ async function handleMetricsFrame(message, identifierId, packetType) {
     }
 }
 
+function buildFrame(sof, id, eof, payloadBuffer) {
+    const sofBuf = Buffer.alloc(2);
+    sofBuf.writeUInt16BE(sof);
+
+    const idBuf = Buffer.alloc(4);
+    idBuf.writeUInt32BE(id);
+
+    const eofBuf = Buffer.alloc(2);
+    eofBuf.writeUInt16BE(eof);
+
+    return Buffer.concat([sofBuf, idBuf, payloadBuffer, eofBuf]);
+}
+
 async function handleInitialSession(message, identifierId, packetType) {
     const PACKET = Buffer.alloc(3);
     PACKET[0] = safeCounter;
@@ -447,7 +465,8 @@ async function handleInitialSession(message, identifierId, packetType) {
         throw new Error('[DAMN] Invalid initial session frame received -_-');
     }
     console.log('[INITIAL SESSION] Retrived initial session data from device: ', frame.identifierId);
-    await publishSafeCounter(TOPIC_HANDSHAKE_ECDH_SEND, PACKET);
+    const framedPacket = buildFrame(0xAA55, identifierId, 0xAABB, PACKET);
+    await publishSafeCounter(TOPIC_HANDSHAKE_ECDH_SEND, framedPacket);
 }
 
 async function uploadMetricsToFirestore(metrics, deviceId) {
@@ -461,7 +480,7 @@ async function uploadMetricsToFirestore(metrics, deviceId) {
 }
 
 async function handleDataFrame(message, identifierId, packetType) {
-    const ACK_PACKET = Buffer.from([0x02]);
+    const ACK_PACKET = 0x02;
     try {
         // State 1: Parse and validate the frame
         console.log("Start Parsing Data Frame");
@@ -523,7 +542,10 @@ async function handleDataFrame(message, identifierId, packetType) {
  */
 function publishAck(topic, ackPacket) {
     return new Promise((resolve, reject) => {
-        client.publish(topic, ackPacket, { qos: 1 }, (err) => {
+        const ackPayload = Buffer.from([ackPacket]); // 1 byte
+        const framedAck = buildFrame(0xAA55, IDENTIFIER, 0xAABB, ackPayload);
+        console.log('ACK: ', ackPayload);
+        client.publish(topic, framedAck, { qos: 1 }, (err) => {
             if (err) {
                 reject(new Error(`Failed to publish ACK to ${topic}: ${err.message}`));
             } else {
@@ -552,7 +574,9 @@ function publishSafeCounter(topic, ackPacket) {
 
 function publishSignalForResettingSequence(topic, signal) {
     return new Promise((resolve, reject) => {
-        client.publish(topic, signal, { qos: 1 }, (err) => {
+        const signalPayload = Buffer.from([signal]); // 1 byte
+        const framedAck = buildFrame(0xAA55, IDENTIFIER, 0xAABB, signalPayload);
+        client.publish(topic, framedAck, { qos: 1 }, (err) => {
             if (err) {
                 reject(new Error(`Failed to publish signal to ${topic}: ${err.message}`));
             } else {
@@ -602,7 +626,7 @@ async function parseFrame(message) {
     const preamble = message.readUInt16LE(0);
     const identifierId = message.readUInt32LE(2);
     const packetType = message.readUInt8(6);
-
+    IDENTIFIER = identifierId;
     if (preamble !== 0xAA55) {
         console.log(`Invalid preamble: expected 0xAA55, got 0x${preamble.toString(16)}`);
         return;

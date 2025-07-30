@@ -1,3 +1,4 @@
 @echo off
-start "Backend" cmd /c "cd backend && npm start"
-start "Broker" cmd /c "cd broker && npm start"
+set GITBASH="C:\Program Files\Git\bin\bash.exe"
+start "Backend" cmd /k "color f0 && cd backend && npm start"
+start "Broker" cmd /k "color f0 && cd broker && npm start"
